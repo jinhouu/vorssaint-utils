@@ -1846,11 +1846,23 @@ enum NotchTests {
                      && Size.openLines(for: String(repeating: "word ", count: 1000), width: 400) == Size.maximumOpenLines
                      && Size.openLines(for: "", width: 400) == 1,
                      "an open entry shows its lines, counting wrapped ones, up to a limit")
-        // A Chinese, Japanese or Korean character is about twice as wide as a
-        // Latin letter: 100 of them wrap to four lines in 400 points.
-        suite.expect(Size.openLines(for: String(repeating: "漢", count: 100), width: 400) == 4
-                     && Size.openLines(for: String(repeating: "日本語のテキスト", count: 10), width: 400) == 3,
-                     "an open entry measures wide characters as drawn, not as Latin letters")
+        let wideTextWidth: CGFloat = 400
+        let latinLines = Size.openLines(for: String(repeating: "x", count: 100), width: wideTextWidth)
+        for text in [String(repeating: "漢", count: 100), String(repeating: "日本語のテキスト", count: 10)] {
+            let storage = NSTextStorage(string: text, attributes: [.font: Size.openTextFont])
+            let layout = NSLayoutManager()
+            let container = NSTextContainer(size: NSSize(width: wideTextWidth, height: .greatestFiniteMagnitude))
+            container.lineFragmentPadding = 0
+            storage.addLayoutManager(layout)
+            layout.addTextContainer(container)
+            var drawnLines = 0
+            layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { _, _, _, _, _ in
+                drawnLines += 1
+            }
+            let measuredLines = Size.openLines(for: text, width: wideTextWidth)
+            suite.expect(measuredLines == drawnLines && measuredLines > latinLines,
+                         "an open entry wraps \(text.prefix(8)) to \(drawnLines) drawn lines, measured \(measuredLines), Latin \(latinLines)")
+        }
         // The history window edits an entry's text and keeps its id.
         let measured = UUID()
         suite.expect(Size.openHeight(text: "short", width: 400, id: measured) == Size.openLineHeight + Size.openChrome
