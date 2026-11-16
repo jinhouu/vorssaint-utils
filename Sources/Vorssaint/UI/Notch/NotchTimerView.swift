@@ -29,15 +29,19 @@ struct NotchTimerView: View {
         // The island's top row holds what used to head the page: the modes
         // and Start while setting up, the phase and the way out once running.
         .notchBand {
-            if service.session.hasSession { phaseReading }
-            else if band.besideCamera { modeMenu }
-            else {
-                // A full row keeps the three words where they fit beside Start,
-                // and the menu's whole name otherwise: the island's marks
-                // after Start give way first.
-                ViewThatFits(in: .horizontal) {
-                    modePicker
-                    modeMenu.fixedSize()
+            let hasSession = service.session.hasSession
+            // Keep the native menu's anchor mounted when the phase replaces
+            // the picker so the first click after Cancel can open it again.
+            ZStack(alignment: .leading) {
+                modeControls
+                    .opacity(hasSession ? 0 : 1)
+                    .allowsHitTesting(!hasSession)
+                    .disabled(hasSession)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityHidden(hasSession)
+                    .layoutPriority(hasSession ? 0 : 1)
+                if hasSession {
+                    phaseReading.layoutPriority(1)
                 }
             }
         } trailing: {
@@ -93,6 +97,17 @@ struct NotchTimerView: View {
         }
         .buttonStyle(NotchButtonStyle(cornerRadius: NotchLayout.timerStartHeight / 2))
         .help(mode == .pomodoro ? text.pomodoroHint : text.start)
+    }
+
+    @ViewBuilder private var modeControls: some View {
+        if band.besideCamera {
+            modeMenu
+        } else {
+            ViewThatFits(in: .horizontal) {
+                modePicker
+                modeMenu.fixedSize()
+            }
+        }
     }
 
     /// Beside the camera the three words do not fit, so the modes are a

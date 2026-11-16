@@ -145,6 +145,14 @@ enum StatusItemAnchorSupport {
         }
     }
 
+    /// Menu items keep their inset from the right edge as the screen resizes.
+    /// The vertical reference is the top of the usable area under the menu bar.
+    static func reconfiguredPanelAnchor(_ point: CGPoint, from reference: CGPoint,
+                                        to newReference: CGPoint) -> CGPoint {
+        CGPoint(x: point.x + newReference.x - reference.x,
+                y: point.y + newReference.y - reference.y)
+    }
+
     /// Where an open panel belongs for a cached anchor: centered on the
     /// anchor's horizontal middle with its top edge held, so content that
     /// grows or shrinks (switching panel tabs) extends downward instead of

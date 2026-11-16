@@ -193,6 +193,12 @@ enum MenuPanelRecoveryTests {
         }
     }
     enum StatusItemAnchorSupport {
+        static let panelReopenCooldown = PanelRecoveryPolicy.panelReopenCooldown
+
+        static func reconfiguredPanelAnchor(_ point: CGPoint, from reference: CGPoint,
+                                            to newReference: CGPoint) -> CGPoint {
+            PanelRecoveryPolicy.reconfiguredPanelAnchor(point, from: reference, to: newReference)
+        }
         static func panelActivationSource<App>(after change: PanelActivationChange<App>, current: App?,
                                                isOwnApp: (App) -> Bool) -> App? {
             PanelRecoveryPolicy.panelActivationSource(after: change, current: current, isOwnApp: isOwnApp)

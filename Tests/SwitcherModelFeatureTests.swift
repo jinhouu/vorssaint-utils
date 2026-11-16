@@ -2990,6 +2990,16 @@ enum SwitcherModelFeatureTests {
 
         // The panel keeps its top edge and its center while its content resizes.
         let panelArea = CGRect(x: 0, y: 0, width: 1470, height: 932)
+        let oldAnchorReference = CGPoint(x: 1920, y: 1056)
+        let newAnchorReference = CGPoint(x: 1600, y: 876)
+        let openingPoint = CGPoint(x: 1700, y: 1050)
+        let resizedPoint = StatusItemAnchorSupport.reconfiguredPanelAnchor(
+            openingPoint, from: oldAnchorReference, to: newAnchorReference)
+        suite.expect(resizedPoint == CGPoint(x: 1380, y: 870),
+                     "a resolution change keeps the panel's offsets from the menu bar edges")
+        suite.expect(StatusItemAnchorSupport.reconfiguredPanelAnchor(
+            resizedPoint, from: newAnchorReference, to: oldAnchorReference) == openingPoint,
+                     "reverting the resolution restores the exact original panel anchor")
         let shortPanel = StatusItemAnchorSupport.pinnedPanelFrame(size: CGSize(width: 332, height: 375),
                                                                   anchorMidX: 1283, anchorTop: 932,
                                                                   visibleFrame: panelArea)
