@@ -161,6 +161,7 @@ struct MetricsTests {
             ("feature-hub-layout", { FeatureHubLayoutTests.run(suite) }),
             ("display-restoration", {
                 DisplayRestorationTests.run(suite)
+                DisplayScalingOverrideTests.run(suite)
                 BrightnessStepTests.run(suite)
                 BrightnessKeyRoutingTests.run(suite)
             }),

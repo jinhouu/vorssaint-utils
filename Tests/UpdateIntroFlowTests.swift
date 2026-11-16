@@ -113,36 +113,28 @@ enum UpdateIntroFlowTests {
             for previous in [nil, "3.3.2", "3.4.0-beta.1"] as [String?] {
                 let host = reset(version)
                 UserDefaults.standard.set(previous, forKey: DefaultsKey.updateHighlightsSeenVersion)
-                // Older beta onboarding prematurely saved this value.
-                UserDefaults.standard.set("3.4.0", forKey: DefaultsKey.supportUpdateIntroVersion)
                 host.presentUpdateIntros()
                 suite.expect(host.shown == ["tour"], "stable upgraders see the tour first")
                 close(host.updateHighlightsWindow, in: host)
-                suite.expect(host.shown == ["tour", "support"], "finishing the tour opens only support next")
-                suite.expect(!host.windowShouldClose(host.supportIntroWindow!), "support waits for its Done action")
-                host.supportIntroCanClose = true
-                suite.expect(host.windowShouldClose(host.supportIntroWindow!), "Done allows support to close")
-                close(host.supportIntroWindow, in: host)
+                suite.expect(host.shown == ["tour", "finished"] && host.supportIntroWindow == nil,
+                             "finishing the tour does not open a support invitation")
                 for nextVersion in [version, "3.4.20", "3.4.21"] {
                     AppInfo.version = nextVersion
                     let relaunch = Host()
                     relaunch.presentUpdateIntros()
-                    suite.expect(relaunch.shown == ["finished"], "completed intros never repeat on relaunch or later hotfixes")
+                    suite.expect(relaunch.shown == ["finished"] && relaunch.supportIntroWindow == nil,
+                                 "stable relaunches skip the support invitation, including later hotfixes")
                 }
             }
         }
-        // Finishing both intros in the previous stable still allows the new invitation once.
-        let updated = reset("3.4.4")
-        UserDefaults.standard.set(UpdateHighlightsInfo.releaseVersion, forKey: DefaultsKey.updateHighlightsSeenVersion)
-        UserDefaults.standard.set("3.4.3-support", forKey: DefaultsKey.supportUpdateIntroVersion)
-        updated.presentUpdateIntros()
-        suite.expect(updated.shown == ["support"], "3.4.3 users see the next support page in 3.4.4")
-        updated.supportIntroCanClose = true
-        close(updated.supportIntroWindow, in: updated)
-        AppInfo.version = "3.4.5"
-        let afterSupport = Host()
-        afterSupport.presentUpdateIntros()
-        suite.expect(afterSupport.shown == ["finished"], "the next support page does not repeat in later patches")
+        for marker in [nil, "3.4.3-support"] as [String?] {
+            let updated = reset("3.4.4")
+            UserDefaults.standard.set(UpdateHighlightsInfo.releaseVersion, forKey: DefaultsKey.updateHighlightsSeenVersion)
+            UserDefaults.standard.set(marker, forKey: DefaultsKey.supportUpdateIntroVersion)
+            updated.presentUpdateIntros()
+            suite.expect(updated.shown == ["finished"] && updated.supportIntroWindow == nil,
+                         "the stable launch skips support regardless of whether an earlier invitation was seen")
+        }
 
         let beta = reset("3.4.0-beta.7")
         beta.markOnboardingComplete()
@@ -152,7 +144,7 @@ enum UpdateIntroFlowTests {
         let upgraded = Host()
         upgraded.presentUpdateIntros()
         close(upgraded.updateHighlightsWindow, in: upgraded)
-        suite.expect(upgraded.shown == ["tour", "support"], "a fresh beta install gets both intros on stable upgrade")
+        suite.expect(upgraded.shown == ["tour", "finished"], "upgrading from beta shows the stable tour without support")
 
         for version in ["3.4.0-beta.7", "3.4.0", "3.4.2"] {
             let host = reset(version)
@@ -174,20 +166,6 @@ enum UpdateIntroFlowTests {
             clean.presentUpdateIntros()
             suite.expect(clean.shown == ["finished"], "fresh stable onboarding does not repeat introductions after a hotfix")
         }
-        let partial = reset("3.4.4")
-        partial.presentUpdateIntros()
-        close(partial.updateHighlightsWindow, in: partial)
-        partial.isTerminating = true
-        close(partial.supportIntroWindow, in: partial)
-        AppInfo.version = "3.4.5"
-        let resumed = Host()
-        resumed.presentUpdateIntros()
-        suite.expect(resumed.shown == ["support"], "a hotfix resumes only the unfinished support page")
-        close(resumed.supportIntroWindow, in: resumed)
-        AppInfo.version = "3.4.20"
-        let completed = Host()
-        completed.presentUpdateIntros()
-        suite.expect(completed.shown == ["finished"], "finishing the remaining page prevents later repeats")
         let interrupted = reset("3.4.0")
         interrupted.presentUpdateIntros()
         interrupted.isTerminating = true
@@ -277,15 +255,14 @@ enum UpdateIntroFlowTests {
         launch(stable, previous: "3.4.3")
         suite.expect(stable.shown == ["whatsNew 3.4.3"], "an update opens What's New before every other intro")
         close(stable.whatsNewWindow, stable)
-        suite.expect(stable.shown == ["whatsNew 3.4.3", "support"], "the next support page follows What's New even after the old invitation was seen")
+        suite.expect(stable.shown == ["whatsNew 3.4.3", "finished"] && stable.supportIntroWindow == nil,
+                     "closing What's New on a stable update does not open support")
         suite.expect(UserDefaults.standard.string(forKey: pendingKey) == nil
                         && UserDefaults.standard.string(forKey: DefaultsKey.whatsNewSeenVersion) == "3.4.4",
                      "closing What's New consumes the update")
         suite.expect(UserDefaults.standard.string(forKey: DefaultsKey.whatsNewKnownFeatures)
                         == WhatsNewInfo.knownFeaturesValue,
                      "closing What's New records the features this version has")
-        stable.supportIntroCanClose = true
-        close(stable.supportIntroWindow, stable)
         let relaunch = Host()
         launch(relaunch, previous: "3.4.4")
         suite.expect(relaunch.shown == ["finished"], "What's New never repeats for the same update")
@@ -294,10 +271,10 @@ enum UpdateIntroFlowTests {
         launch(olderUpgrade, previous: "3.3.2")
         close(olderUpgrade.whatsNewWindow, olderUpgrade)
         suite.expect(olderUpgrade.shown == ["whatsNew 3.3.2", "tour"],
-                     "an unseen feature tour follows the changelog before support")
+                     "an unseen feature tour still follows the changelog")
         close(olderUpgrade.updateHighlightsWindow, olderUpgrade)
-        suite.expect(olderUpgrade.shown == ["whatsNew 3.3.2", "tour", "support"],
-                     "support follows both the changelog and the pending feature tour")
+        suite.expect(olderUpgrade.shown == ["whatsNew 3.3.2", "tour", "finished"],
+                     "closing both update windows does not open support")
 
         let beta = reset("3.4.3-beta.1")
         UserDefaults.standard.set("3.4.0", forKey: DefaultsKey.updateHighlightsSeenVersion)
@@ -352,15 +329,15 @@ enum UpdateIntroFlowTests {
         UserDefaults.standard.set(UpdateHighlightsInfo.releaseVersion, forKey: DefaultsKey.updateHighlightsSeenVersion)
         nothingForYou.whatsNewHasContent = false
         launch(nothingForYou, previous: "3.4.0")
-        suite.expect(nothingForYou.shown == ["support"] && UserDefaults.standard.string(forKey: pendingKey) == nil,
+        suite.expect(nothingForYou.shown == ["finished"] && UserDefaults.standard.string(forKey: pendingKey) == nil,
                      "an update with nothing for this Mac skips What's New and consumes it")
 
         let optedOut = reset("3.4.4")
         UserDefaults.standard.set(UpdateHighlightsInfo.releaseVersion, forKey: DefaultsKey.updateHighlightsSeenVersion)
         UserDefaults.standard.set(false, forKey: DefaultsKey.releaseNotesOnUpdate)
         launch(optedOut, previous: "3.4.0")
-        suite.expect(optedOut.shown == ["support"] && UserDefaults.standard.string(forKey: pendingKey) == nil,
-                     "with What's New turned off the update counts as read and the next intro follows")
+        suite.expect(optedOut.shown == ["finished"] && UserDefaults.standard.string(forKey: pendingKey) == nil,
+                     "with What's New turned off the update counts as read without showing support")
 
         let fresh = reset("3.4.3")
         fresh.markOnboardingComplete()

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Vorssaint
 
+import CoreGraphics
 import SwiftUI
 
 /// Panel section with one brightness slider per adjustable display. Values
@@ -9,58 +10,77 @@ import SwiftUI
 struct BrightnessSection: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var service = BrightnessService.shared
+    @ObservedObject private var scaling = DisplayScalingService.shared
     @ObservedObject private var permissions = Permissions.shared
+    @AppStorage(DefaultsKey.brightnessControlEnabled) private var brightnessEnabled = false
     @AppStorage(DefaultsKey.brightnessOSDEnabled) private var brightnessOSDEnabled = false
     @AppStorage(DefaultsKey.brightnessKeysEnabled) private var brightnessKeysEnabled = false
     @State private var optionsExpanded = false
     var collapsible = true
+    @State private var expandedDisplays: Set<CGDirectDisplayID> = []
 
     private var strings: BrightnessFeatureStrings { FeatureStrings.brightness(l10n.language) }
+    private var brightnessLabel: String { FeatureStrings.notch(l10n.language).brightness }
 
     var body: some View {
         PanelSection(.brightness, title: strings.pageTitle, collapsible: collapsible) {
             VStack(alignment: .leading, spacing: 10) {
-                if service.displays.isEmpty {
+                if displayIDs.isEmpty {
                     Text(strings.noDisplays)
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(service.displays) { display in
-                        row(display)
+                }
+                ForEach(displayIDs, id: \.self) { id in
+                    let display = brightnessEnabled ? service.displays.first { $0.id == id } : nil
+                    let monitor = scaling.monitors.first { $0.displayID == id }
+                    displayRow(id, brightness: display, scalingMonitor: monitor)
+                }
+                if brightnessEnabled {
+                    if let failure = service.displayControlFailure {
+                        Text(displayControlFailureText(failure, strings: strings))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.red)
                     }
-                }
-                if let failure = service.displayControlFailure {
-                    Text(displayControlFailureText(failure, strings: strings))
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.red)
-                }
-                if service.keyboardLightEnabled != nil {
+                    if service.keyboardLightEnabled != nil {
+                        Divider()
+                        keyboardLightRow
+                    }
+                    if service.brightnessOSDSupported {
+                        Divider()
+                        Toggle(strings.osdToggle, isOn: $brightnessOSDEnabled)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .help(strings.osdCaption)
+                            .onChange(of: brightnessOSDEnabled) { _, isOn in
+                                if isOn { permissions.requestAccessibility() }
+                                service.syncWithPreferences()
+                            }
+                    }
+                    if AppFeature.extraBrightness.isAvailable {
+                        Divider()
+                        ExtraBrightnessPanelToggle()
+                    }
                     Divider()
-                    keyboardLightRow
+                    optionsDisclosure
                 }
-                if service.brightnessOSDSupported {
-                    Divider()
-                    Toggle(strings.osdToggle, isOn: $brightnessOSDEnabled)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .help(strings.osdCaption)
-                        .onChange(of: brightnessOSDEnabled) { _, isOn in
-                            if isOn { permissions.requestAccessibility() }
-                            service.syncWithPreferences()
-                        }
-                }
-                if AppFeature.extraBrightness.isAvailable {
-                    Divider()
-                    ExtraBrightnessPanelToggle()
-                }
-                Divider()
-                optionsDisclosure
             }
             .panelCard()
             .onAppear {
+                scaling.refresh()
+                if let pending = scaling.pending,
+                   let monitor = scaling.monitors.first(where: { $0.id == pending }) {
+                    expandedDisplays.insert(monitor.displayID)
+                }
+                guard brightnessEnabled else { return }
                 service.refresh()
                 service.refreshKeyboardLight()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)) { _ in
+                scaling.refresh()
+            }
+            .onChange(of: displayIDs) { _, ids in
+                expandedDisplays.formIntersection(ids)
             }
         }
     }
@@ -114,38 +134,88 @@ struct BrightnessSection: View {
         }
     }
 
-    private func row(_ display: BrightnessDisplay) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private var displayIDs: [CGDirectDisplayID] {
+        let brightnessIDs = brightnessEnabled ? service.displays.map(\.id) : []
+        let known = Set(brightnessIDs)
+        return brightnessIDs + scaling.monitors.map(\.displayID).filter { !known.contains($0) }
+    }
+
+    private func displayRow(_ id: CGDirectDisplayID, brightness display: BrightnessDisplay?,
+                            scalingMonitor monitor: DisplayScalingService.Monitor?) -> some View {
+        let isExpanded = expandedDisplays.contains(id)
+        let name = display?.name ?? monitor?.name ?? ""
+        let isBuiltIn = display?.isBuiltIn ?? monitor?.isBuiltIn ?? false
+
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Image(systemName: display.isBuiltIn ? "laptopcomputer" : "display")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
-                Text(display.name)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 4)
-                if display.isActive, display.method != nil {
-                    Text("\(Int((display.brightness * 100).rounded()))%")
-                        .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                } else if !display.isActive {
-                    Text(strings.displayOff)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
+                Button {
+                    // Like the Keep Awake options, insert the content in one
+                    // layout pass so the popover can grow from its top edge.
+                    if isExpanded {
+                        expandedDisplays.remove(id)
+                    } else {
+                        expandedDisplays.insert(id)
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 12)
+                            .foregroundStyle(.secondary)
+                        Image(systemName: isBuiltIn ? "laptopcomputer" : "display")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        Text(name)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        if !isExpanded, let display, display.isActive, display.method != nil {
+                            Text(display.brightness.formatted(.percent.precision(.fractionLength(0))))
+                                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        } else if display?.isActive == false {
+                            Text(strings.displayOff)
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .contentShape(Rectangle())
                 }
-                DisplayPowerButton(display: display, compact: true)
+                .buttonStyle(.plain)
+                .accessibilityLabel(name)
+                .accessibilityAddTraits(isExpanded ? .isSelected : [])
+
+                if let display {
+                    DisplayPowerButton(display: display, compact: true)
+                }
             }
-            if display.isActive, display.method != nil {
-                Slider(value: brightnessBinding(display), in: 0...1)
-                    .controlSize(.small)
-                    .disabled(service.isDisplayPending(display.id))
-                    .accessibilityLabel(display.name)
-            }
-            SoftwareDimmingButton(display: display, compact: true)
-            if display.isActive, let audio = display.audio {
-                MonitorSpeakerVolumeRow(displayName: display.name, audio: audio, strings: strings, compact: true)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let display {
+                        if display.isActive, display.method != nil {
+                            let value = display.brightness.formatted(.percent.precision(.fractionLength(0)))
+                            MonitorSliderLayout(title: brightnessLabel, value: value, symbol: "sun.max") {
+                                Slider(value: brightnessBinding(display), in: 0...1)
+                                    .disabled(service.isDisplayPending(display.id))
+                                    .accessibilityLabel("\(display.name), \(brightnessLabel)")
+                                    .accessibilityValue(value)
+                            }
+                        }
+                        SoftwareDimmingButton(display: display, compact: true)
+                        if display.isActive, let audio = display.audio {
+                            MonitorSpeakerVolumeRow(displayName: display.name, audio: audio, strings: strings, compact: true)
+                        }
+                    }
+                    if let monitor {
+                        MonitorScalingSettings(monitor: monitor, service: scaling,
+                                               strings: DisplayScalingStrings(l10n.language), compact: true)
+                    }
+                }
+                .padding(.leading, 18)
+                .controlSize(.small)
             }
         }
     }
@@ -184,6 +254,35 @@ struct BrightnessSection: View {
         Binding(get: { display.brightness },
                 set: { service.setBrightness($0, for: display.id,
                                              showOSD: brightnessOSDEnabled) })
+    }
+}
+
+/// Shared layout for the monitor's brightness and resolution sliders.
+struct MonitorSliderLayout<Control: View>: View {
+    let title: String
+    let value: String
+    let symbol: String
+    @ViewBuilder let control: () -> Control
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title)
+                Spacer(minLength: 8)
+                Text(value).monospacedDigit()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                    .accessibilityHidden(true)
+                control()
+            }
+        }
     }
 }
 
@@ -342,20 +441,35 @@ struct DisplayPowerButton: View {
 
     var body: some View {
         Group {
-            if pending {
+            if compact {
+                Toggle(isOn: Binding(
+                    get: { display.isActive },
+                    set: { isOn in
+                        if isOn != display.isActive { service.toggleDisplay(display) }
+                    }
+                )) {
+                    Text(label)
+                }
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .disabled(pending || !enabled)
+                .help(label)
+                .accessibilityLabel(label)
+            } else if pending {
                 ProgressView()
                     .controlSize(.small)
-                    .frame(width: compact ? 16 : 20, height: 18)
+                    .frame(width: 20, height: 18)
                     .accessibilityLabel(label)
             } else {
                 Button {
                     service.toggleDisplay(display)
                 } label: {
                     Image(systemName: display.isActive ? "power" : "power.circle.fill")
-                        .font(.system(size: compact ? 10.5 : 12, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(display.isActive ? AnyShapeStyle(.secondary)
                                                          : AnyShapeStyle(.green))
-                        .frame(width: compact ? 16 : 20, height: 18)
+                        .frame(width: 20, height: 18)
                 }
                 .buttonStyle(.plain)
                 .disabled(!enabled)

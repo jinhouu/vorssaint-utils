@@ -58,6 +58,7 @@ struct EnergySettings: View {
                 if (focus == nil || focus == .brightness), AppFeature.brightness.isAvailable {
                     displaysCard
                         .settingsSectionAnchor(.brightness, cornerRadius: 16)
+                    DisplayScalingSettings()
                 }
                 if (focus == nil || focus == .extraBrightness), AppFeature.extraBrightness.isAvailable {
                     extraBrightnessCard

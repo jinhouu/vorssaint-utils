@@ -647,15 +647,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private struct PanelAnchor {
         /// The opening popover window's horizontal center, used while direct
         /// frame correction is still responsible for placement.
-        let midX: CGFloat
+        var midX: CGFloat
         /// The opening arrow's screen-space tip, used once the popover hangs
         /// from a stable positioning view. With a trustworthy status frame this
         /// is the status button's center, while `midX` is the already-placed
         /// window's center; AppKit's horizontal edge clamp can make them differ.
         /// Fallback anchors know only one x coordinate and use it for both.
-        let tipX: CGFloat
-        let top: CGFloat
-        let screen: NSScreen?
+        var tipX: CGFloat
+        var top: CGFloat
+        var screen: NSScreen?
         /// False when it came from a fallback, so a guess never becomes the
         /// remembered good anchor for the rest of the session.
         let trusted: Bool
@@ -665,11 +665,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         /// still describes a spot in the menu bar the system places the panel
         /// better than any remembered point can, following the icon as the bar
         /// shuffles items around it.
-        let overridesSoundFrame: Bool
+        var overridesSoundFrame: Bool
         /// The button the anchor was taken from, so "does the frame still
         /// describe the bar?" asks the item the panel is actually hanging off
         /// (a metric item, not necessarily the main icon).
         weak var button: NSStatusBarButton?
+        var modeChangeReference: CGPoint?
+        var modeChangeStartedAt: TimeInterval?
     }
 
     private func captureStatusClick() {
@@ -839,18 +841,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
         popoverLastFrame = window.frame
         popoverLastWindowNumber = window.windowNumber
+        let center = NotificationCenter.default
+        popoverDriftObservers.append(center.addObserver(forName: .displayModeWillChange, object: nil, queue: .main) {
+            [weak self] _ in self?.preparePopoverForDisplayModeChange()
+        })
+        popoverDriftObservers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                                                         object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.popoverAnchor?.modeChangeReference != nil,
+                  let window = self.popover.contentViewController?.view.window, self.popover.isShown else { return }
+            self.updatePopoverAnchorForDisplayMode()
+            self.useStablePopoverPositioningViewIfNeeded(window)
+            self.applyPopoverDriftFrame(window)
+        })
         for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
             popoverDriftObservers.append(NotificationCenter.default.addObserver(
                 forName: name, object: window, queue: .main
             ) { [weak self, weak window] notification in
                 guard let self, let window else { return }
                 self.popoverLastFrame = window.frame
-                // Once the popover hangs from the stable view, that view is the
-                // only authority for placement. Recompute its screen-space
-                // position on both resize and move; applying the old midX frame
-                // as well would fight AppKit's tip-aware edge clamping.
+                self.updatePopoverAnchorForDisplayMode()
+                // The stable view normally owns placement. During a display
+                // reconfiguration, also correct the window's frame if AppKit
+                // moves it before honoring the updated positioning view.
                 if self.popoverPositioningPanel != nil {
                     self.useStablePopoverPositioningViewIfNeeded(window)
+                    if self.popoverAnchor?.modeChangeReference != nil {
+                        self.applyPopoverDriftFrame(window)
+                    }
                     return
                 }
                 let contentResized = notification.name == NSWindow.didResizeNotification
@@ -869,6 +886,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 }
             })
         }
+    }
+
+    private func preparePopoverForDisplayModeChange() {
+        guard popover.isShown, !popoverIsClosing, !popoverIsSwitchingAnchor,
+              var anchor = popoverAnchor, let screen = anchor.screen,
+              let window = popover.contentViewController?.view.window else { return }
+        if anchor.modeChangeReference == nil {
+            anchor.modeChangeReference = CGPoint(x: screen.frame.maxX, y: screen.visibleFrame.maxY)
+        }
+        anchor.modeChangeStartedAt = ProcessInfo.processInfo.systemUptime
+        anchor.overridesSoundFrame = true
+        popoverAnchor = anchor
+        useStablePopoverPositioningViewIfNeeded(window)
+    }
+
+    private func updatePopoverAnchorForDisplayMode() {
+        guard var anchor = popoverAnchor, let reference = anchor.modeChangeReference,
+              let id = anchor.screen?.displayID,
+              let screen = NSScreen.screens.first(where: { $0.displayID == id }) else { return }
+        let newReference = CGPoint(x: screen.frame.maxX, y: screen.visibleFrame.maxY)
+        if reference != newReference {
+            let point = StatusItemAnchorSupport.reconfiguredPanelAnchor(
+                CGPoint(x: anchor.midX, y: anchor.top), from: reference, to: newReference)
+            anchor.midX = point.x
+            anchor.tipX += newReference.x - reference.x
+            anchor.top = point.y
+            anchor.modeChangeReference = newReference
+        }
+        anchor.screen = screen
+        popoverAnchor = anchor
+        PanelInteractionState.shared.anchorScreen = screen
     }
 
     private func applyPopoverDriftFrame(_ window: NSWindow) {
@@ -1448,6 +1496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // Decided before anything below is torn down, and treated like a
         // metric anchor switch: the panel is about to be shown again in the
         // same turn, so the sampling and caches it is using stay alive.
+        updatePopoverAnchorForDisplayMode()
         let recoveryAnchor = recoverForeignClose ? anchorAfterForeignClose() : nil
         if recoveryAnchor != nil {
             popoverIsSwitchingAnchor = true
@@ -1585,16 +1634,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     /// A recent event targeting this panel is required; a parked pointer is not
     /// evidence that an unrelated system close should be undone.
     private func anchorAfterForeignClose() -> PanelAnchor? {
-        guard !isTerminating, !popoverIsSwitchingAnchor,
-              let anchor = popoverAnchor, anchor.screen?.isStillAttached == true,
-              let button = anchor.button, button.window != nil,
-              StatusItemAnchorSupport.shouldReopenPanel(
-                  closedByApp: popoverCloseIsAppRequested,
-                  lastFrame: popoverLastFrame,
-                  panelWindowNumber: popoverLastWindowNumber,
-                  event: NSApp.currentEvent,
-                  secondsSinceLastReopen: Date().timeIntervalSince(popoverForeignReopenAt))
-        else { return nil }
+        guard !isTerminating, !popoverIsSwitchingAnchor, !popoverCloseIsAppRequested,
+              var anchor = popoverAnchor, anchor.screen?.isStillAttached == true,
+              let button = anchor.button, button.window != nil else { return nil }
+        let sinceLastReopen = Date().timeIntervalSince(popoverForeignReopenAt)
+        if let started = anchor.modeChangeStartedAt,
+           ProcessInfo.processInfo.systemUptime - started <= 1,
+           sinceLastReopen > StatusItemAnchorSupport.panelReopenCooldown {
+            // A slider change is debounced, so the system may close the
+            // popover when there is no longer a recent click to recover from.
+            anchor.modeChangeStartedAt = nil
+            return anchor
+        }
+        guard StatusItemAnchorSupport.shouldReopenPanel(
+            closedByApp: popoverCloseIsAppRequested,
+            lastFrame: popoverLastFrame,
+            panelWindowNumber: popoverLastWindowNumber,
+            event: NSApp.currentEvent,
+            secondsSinceLastReopen: sinceLastReopen
+        ) else { return nil }
         return anchor
     }
 
@@ -2218,10 +2276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func presentUpdateIntros() {
         if showWhatsNewIfNeeded() { return }
         if showUpdateHighlightsIfNeeded() { return }
-        if !AppInfo.isBeta {
-            if showSupportUpdateIntroIfNeeded() { return }
-            if showUpdateShowcaseIntroIfNeeded() { return }
-        }
+        if !AppInfo.isBeta, showUpdateShowcaseIntroIfNeeded() { return }
         showBrightnessUpdatePromptIfNeeded()
     }
 
@@ -2538,17 +2593,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
     }
 
-    private func showSupportUpdateIntroIfNeeded() -> Bool {
-        // Stable patches share one invitation, even if the first installed
-        // version in this release series is a hotfix.
-        guard SupportUpdateIntroInfo.shouldShow(
-            appVersion: AppInfo.version,
-            lastSeenVersion: UserDefaults.standard.string(forKey: DefaultsKey.supportUpdateIntroVersion)
-        ) else { return false }
-        showSupportUpdateIntro()
-        return true
-    }
-
     private func showSupportUpdateIntro(isReview: Bool = false) {
         guard !isTerminating, isReview || !AppInfo.isBeta else { return }
         closePopover()
@@ -2790,7 +2834,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
             markWhatsNewSeen()
             // Done, Escape and the window's close button all arrive here.
-            // Finish any pending feature tour before the stable invitation.
+            // Finish any pending feature tour.
             DispatchQueue.main.async { [weak self] in self?.presentUpdateIntros() }
             return
         }

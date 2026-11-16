@@ -346,7 +346,7 @@ def main():
           + "extension UpdateIntroFlowTests {\nfinal class Host: Fixture {\n"
           + "".join(declaration(panel, prefix).replace("    private ", "    ", 1) for prefix in [
               "    private func presentUpdateIntros()", "    private func showUpdateHighlightsIfNeeded()",
-              "    private func markUpdateHighlightsSeen()", "    private func showSupportUpdateIntroIfNeeded()",
+              "    private func markUpdateHighlightsSeen()",
               "    func windowShouldClose(", "    func windowWillClose(", "    private func markOnboardingComplete()",
               "    private func markSupportUpdateIntroSeenIfCurrentUpdate()", "    private func markSupportUpdateIntroSeen()",
               "    private func queueWhatsNewIfNeeded(", "    private func showWhatsNewIfNeeded()",
@@ -361,6 +361,8 @@ def main():
               "    private func iconIsOnScreen("])
           + "}\n}\n")
     write("MenuPanelRecovery.swift", "import AppKit\nimport Foundation\n"
+          + declaration("Sources/Vorssaint/Services/Display/DisplayScalingService.swift",
+                        "extension Notification.Name {")
           + "extension MenuPanelRecoveryTests {\nfinal class Host: Fixture {\n"
           + "".join(declaration(panel, prefix).replace("private ", "") for prefix in [
               "    private struct PanelAnchor", "    private func statusButtonMidX(",
@@ -369,6 +371,7 @@ def main():
               "    private func correctedPopoverMidX(", "    private func resolvePanelAnchor(",
               "    private func frameStillDescribesMenuBar(", "    private func statusFrameNeedsAnchorOverride(",
               "    private func anchorVisibleFrame(", "    private func applyPopoverDriftFrame(",
+              "    private func preparePopoverForDisplayModeChange(", "    private func updatePopoverAnchorForDisplayMode(",
               "    private func beginPopoverDriftCorrection(window: NSWindow, anchor: PanelAnchor) {",
               "    private func armPopoverDriftCorrection(", "    private func endPopoverDriftCorrection(",
               "    private func showPopover(", "    func popoverWillClose(", "    func popoverDidClose(",

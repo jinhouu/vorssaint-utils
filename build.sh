@@ -29,12 +29,14 @@ trap 'exit 1' INT TERM HUP
 # Flags: --dev builds the local-only "Vorssaint (Developer)" variant (its own
 # bundle id, so it coexists with the official app); --install puts it in /Applications.
 DEV=0
+MAIN_NAME=0
 INSTALL=0
 TEST=0
 TEST_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --dev)     DEV=1 ;;
+        --main-name) MAIN_NAME=1 ;;
         --install) INSTALL=1 ;;
         --test)    TEST=1 ;;
         --test-suite=*) TEST=1; TEST_ARGS+=("--suite=${arg#*=}") ;;
@@ -42,8 +44,14 @@ for arg in "$@"; do
     esac
 done
 
+if (( MAIN_NAME && (! DEV || ! INSTALL || TEST) )); then
+    echo "✗ --main-name requires --dev --install" >&2
+    exit 1
+fi
+
 if (( DEV )); then
     APP_NAME="Vorssaint (Developer)"
+    if (( MAIN_NAME )); then APP_NAME="Vorssaint"; fi
     EXECUTABLE="VorssaintDeveloper"
     APP_BUNDLE_ID="com.vorssaint.utils.dev"
     BUILD_VARIANT_FLAGS=(-D VORSSAINT_DEVELOPMENT)
@@ -421,6 +429,7 @@ if (( TEST )); then
         Sources/Vorssaint/Core/SymbolicHotKeys.swift
         Sources/Vorssaint/Services/SystemShortcutTakeoverSupport.swift
         Sources/Vorssaint/Core/Localization.swift
+        Sources/Vorssaint/Core/DisplayScalingStrings.swift
         Sources/Vorssaint/Core/Localizations/Strings+*.swift
         Sources/Vorssaint/Core/FeatureStrings.swift
         Sources/Vorssaint/Core/KillProcessStrings.swift
@@ -591,6 +600,7 @@ if (( TEST )); then
         Sources/Vorssaint/Services/CleaningMode/CleaningMouseReleaseGate.swift
         Sources/Vorssaint/Services/Display/ExtraBrightnessSupport.swift
         Sources/Vorssaint/Services/Display/BrightnessSupport.swift
+        Sources/Vorssaint/Services/Display/DisplayScalingOverride.swift
         Sources/Vorssaint/Services/Display/MonitorVolumeKeySettings.swift
         Sources/Vorssaint/Services/Display/LidDimmingSupport.swift
         Sources/Vorssaint/Services/Cleaner/CleanerSupport.swift
@@ -750,6 +760,7 @@ FAN_HELPER_VERSION="$(
 printf 'APPL????' > "$STAGE/Contents/PkgInfo"
 cp build/AppIcon.icns "$STAGE/Contents/Resources/AppIcon.icns"
 cp Sources/RecorderGIFCodec/vendor/cgif/LICENSE "$STAGE/Contents/Resources/cgif-LICENSE.txt"
+cp docs/CRISP-LICENSE.txt "$STAGE/Contents/Resources/crisp-LICENSE.txt"
 cp build/MenuBarIcon.png build/MenuBarIcon@2x.png build/BrandMark.png "$STAGE/Contents/Resources/"
 if [[ -f build/Assets.car ]]; then
     cp build/Assets.car "$STAGE/Contents/Resources/Assets.car"
@@ -947,6 +958,13 @@ if (( INSTALL )); then
         done
     fi
     INSTALL_DEST="/Applications/$APP_NAME.app"
+    if (( MAIN_NAME )) && [[ -e "$INSTALL_DEST" || -L "$INSTALL_DEST" ]]; then
+        if [[ -L "$INSTALL_DEST" ]] ||
+           [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$INSTALL_DEST/Contents/Info.plist")" != "$APP_BUNDLE_ID" ]]; then
+            echo "✗ Refusing to replace a different app at $INSTALL_DEST" >&2
+            exit 1
+        fi
+    fi
     rm -rf "$INSTALL_DEST"
     ditto --noextattr --noqtn "$STAGE" "$INSTALL_DEST"
     sign_installed_bundle "$INSTALL_DEST"
