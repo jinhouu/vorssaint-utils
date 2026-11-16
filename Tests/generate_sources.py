@@ -346,7 +346,7 @@ def main():
           + "extension UpdateIntroFlowTests {\nfinal class Host: Fixture {\n"
           + "".join(declaration(panel, prefix).replace("    private ", "    ", 1) for prefix in [
               "    private func presentUpdateIntros()", "    private func showUpdateHighlightsIfNeeded()",
-              "    private func markUpdateHighlightsSeen()", "    private func showSupportUpdateIntroIfNeeded()",
+              "    private func markUpdateHighlightsSeen()",
               "    func windowShouldClose(", "    func windowWillClose(", "    private func markOnboardingComplete()",
               "    private func markSupportUpdateIntroSeenIfCurrentUpdate()", "    private func markSupportUpdateIntroSeen()",
               "    private func queueWhatsNewIfNeeded(", "    private func showWhatsNewIfNeeded()",

@@ -2276,10 +2276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func presentUpdateIntros() {
         if showWhatsNewIfNeeded() { return }
         if showUpdateHighlightsIfNeeded() { return }
-        if !AppInfo.isBeta {
-            if showSupportUpdateIntroIfNeeded() { return }
-            if showUpdateShowcaseIntroIfNeeded() { return }
-        }
+        if !AppInfo.isBeta, showUpdateShowcaseIntroIfNeeded() { return }
         showBrightnessUpdatePromptIfNeeded()
     }
 
@@ -2596,17 +2593,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
     }
 
-    private func showSupportUpdateIntroIfNeeded() -> Bool {
-        // Stable patches share one invitation, even if the first installed
-        // version in this release series is a hotfix.
-        guard SupportUpdateIntroInfo.shouldShow(
-            appVersion: AppInfo.version,
-            lastSeenVersion: UserDefaults.standard.string(forKey: DefaultsKey.supportUpdateIntroVersion)
-        ) else { return false }
-        showSupportUpdateIntro()
-        return true
-    }
-
     private func showSupportUpdateIntro(isReview: Bool = false) {
         guard !isTerminating, isReview || !AppInfo.isBeta else { return }
         closePopover()
@@ -2848,7 +2834,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
             markWhatsNewSeen()
             // Done, Escape and the window's close button all arrive here.
-            // Finish any pending feature tour before the stable invitation.
+            // Finish any pending feature tour.
             DispatchQueue.main.async { [weak self] in self?.presentUpdateIntros() }
             return
         }
