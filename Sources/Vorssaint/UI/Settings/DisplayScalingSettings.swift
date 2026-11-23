@@ -115,39 +115,57 @@ struct MonitorScalingSettings: View {
                         }
                     }
                 )
-                Picker(strings[.refreshRate], selection: selection) {
-                    if monitor.current?.refreshRate == 0 { Text("—").tag(0.0) }
-                    ForEach(monitor.refreshChoices, id: \.refreshRate) { mode in
-                        Text(mode.ioDisplayModeID == monitor.proMotionModeID
-                             ? "ProMotion"
-                             : "\(mode.refreshRate.formatted(.number.precision(.fractionLength(0...2)))) Hz")
-                            .tag(mode.refreshRate)
+                displayControlRow(strings[.refreshRate]) {
+                    Picker(strings[.refreshRate], selection: selection) {
+                        if monitor.current?.refreshRate == 0 { Text("—").tag(0.0) }
+                        ForEach(monitor.refreshChoices, id: \.refreshRate) { mode in
+                            Text(mode.ioDisplayModeID == monitor.proMotionModeID
+                                 ? "ProMotion"
+                                 : "\(mode.refreshRate.formatted(.number.precision(.fractionLength(0...2)))) Hz")
+                                .tag(mode.refreshRate)
+                        }
                     }
+                    .pickerStyle(.menu)
+                    .disabled(service.busy || service.pending != nil)
                 }
-                .pickerStyle(.menu)
-                .disabled(service.busy || service.pending != nil)
+            }
+
+            if let signal = monitor.signal {
+                if signal.choices.count > 1 {
+                    Picker(strings.colorSignalFormat, selection: Binding(
+                        get: { signal.active },
+                        set: { service.previewSignal($0, for: monitor.id) }
+                    )) {
+                        ForEach(signal.choices, id: \.self) { format in
+                            Text(format.label).tag(format)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .disabled(service.busy || service.pending != nil)
+                } else {
+                    LabeledContent(strings.colorSignalFormat, value: signal.active.label)
+                }
             }
 
             if compact && !monitor.isBuiltIn && !monitor.sharedModel && (profile != nil || canEnable) {
-                HStack(spacing: 8) {
-                    Toggle("HiDPI", isOn: Binding(
-                        get: { profile != nil && monitor.isHiDPI },
-                        set: { enabled in
-                            if profile != nil {
-                                service.setHiDPI(enabled, for: monitor.id)
-                            } else if enabled {
-                                service.install(selectedProfile, for: monitor.id, prompt: strings[.prompt],
-                                                activateAfterInstall: true)
-                            }
+                displaySwitch("HiDPI", isOn: Binding(
+                    get: { profile != nil && monitor.isHiDPI },
+                    set: { enabled in
+                        if profile != nil {
+                            service.setHiDPI(enabled, for: monitor.id)
+                        } else if enabled {
+                            service.install(selectedProfile, for: monitor.id, prompt: strings[.prompt],
+                                            activateAfterInstall: true)
                         }
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .disabled(service.busy || service.pending != nil)
-                    Text("HiDPI")
-                        .accessibilityHidden(true)
-                }
+                    }
+                ))
+            }
+
+            if let dithering = monitor.gpuDithering {
+                displaySwitch(strings.gpuDithering, isOn: Binding(
+                    get: { dithering },
+                    set: { service.setGPUDithering($0, for: monitor.id) }
+                ))
             }
 
             if monitor.owner != nil, !compact || profile == nil {
@@ -171,6 +189,8 @@ struct MonitorScalingSettings: View {
                 caption(strings[.overrideFailed])
             case .modeFailed:
                 caption(strings[.modeFailed])
+            case .signalFailed:
+                caption(strings.signalFailed)
             case nil:
                 EmptyView()
             }
@@ -178,6 +198,28 @@ struct MonitorScalingSettings: View {
         .onAppear(perform: resetSelection)
         .onChange(of: monitor.choices.map(\.ioDisplayModeID)) { _, _ in resetSelection() }
         .onChange(of: monitor.current?.ioDisplayModeID) { _, _ in resetSelection() }
+    }
+
+    private func displaySwitch(_ title: String, isOn: Binding<Bool>) -> some View {
+        displayControlRow(title) {
+            Toggle(title, isOn: isOn)
+                .toggleStyle(.switch)
+                .controlSize(compact ? .mini : .small)
+                .disabled(service.busy || service.pending != nil)
+        }
+    }
+
+    @ViewBuilder private func displayControlRow<Control: View>(_ title: String,
+                                                               @ViewBuilder control: () -> Control) -> some View {
+        if compact {
+            HStack(spacing: 8) {
+                Text(title).accessibilityHidden(true)
+                Spacer(minLength: 0)
+                control().labelsHidden()
+            }
+        } else {
+            control()
+        }
     }
 
     private var canEnable: Bool {

@@ -30,8 +30,16 @@ struct DisplayScalingStrings {
     }
 
     private let values: [Substring]
+    private let language: AppLanguage
+
+    var colorSignalFormat: String { language == .ko ? "색상 전달 형식" : "Color Signal Format" }
+    var gpuDithering: String { language == .ko ? "GPU 디더링" : "GPU Dithering" }
+    var signalFailed: String {
+        language == .ko ? "디스플레이 신호 설정을 변경하지 못했습니다." : "The display signal setting could not be changed."
+    }
 
     init(_ language: AppLanguage) {
+        self.language = language
         values = Self.catalog(language).split(separator: "\n", omittingEmptySubsequences: false)
     }
 

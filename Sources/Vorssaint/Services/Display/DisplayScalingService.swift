@@ -63,6 +63,8 @@ final class DisplayScalingService: ObservableObject {
         let choices: [Choice]
         let refreshChoices: [Choice]
         let proMotionModeID: Int32?
+        let gpuDithering: Bool?
+        let signal: DisplaySignalFormat.State?
 
         var isHiDPI: Bool {
             guard let current else { return false }
@@ -74,7 +76,7 @@ final class DisplayScalingService: ObservableObject {
     }
 
     enum Notice: Equatable {
-        case reconnect, overrideFailed, modeFailed
+        case reconnect, overrideFailed, modeFailed, signalFailed
     }
 
     static let shared = DisplayScalingService()
@@ -86,7 +88,12 @@ final class DisplayScalingService: ObservableObject {
     @Published private(set) var notices: [UUID: Notice] = [:]
     private var lastHiDPISizes: [UUID: DisplayScalingOverride.Size] = [:]
     private var revertTask: Task<Void, Never>?
-    private var previewModes: (original: CGDisplayMode, trial: Choice)?
+    private var previewChange: PreviewChange?
+
+    private enum PreviewChange {
+        case resolution(original: CGDisplayMode, trial: Choice)
+        case signal(mode: CGDisplayMode, original: DisplaySignalFormat.Format, trial: DisplaySignalFormat.Format)
+    }
 
     private init() {}
 
@@ -137,10 +144,14 @@ final class DisplayScalingService: ObservableObject {
                 choices = []
                 refreshChoices = []
             }
+            let signal = shared || !standalone ? nil : current.flatMap {
+                DisplaySignalFormat.state(for: displayID, mode: $0)
+            }
             return Monitor(id: id, displayID: displayID, name: screen.localizedName, isBuiltIn: isBuiltIn,
                            paths: paths, sharedModel: shared, panel: panel, current: current, choices: choices,
                            refreshChoices: refreshChoices,
-                           proMotionModeID: isBuiltIn ? Self.proMotionModeID(rawModes, current: current) : nil)
+                           proMotionModeID: isBuiltIn ? Self.proMotionModeID(rawModes, current: current) : nil,
+                           gpuDithering: shared ? nil : DisplayDithering.enabled(for: displayID), signal: signal)
         }
         let visible = Set(monitors.map { $0.paths.model })
         offline = managed.filter { !visible.contains($0.model) }
@@ -187,6 +198,14 @@ final class DisplayScalingService: ObservableObject {
                 }
             }
         }
+    }
+
+    func setGPUDithering(_ enabled: Bool, for id: UUID) {
+        guard !busy, pending == nil else { return }
+        refresh()
+        guard let monitor = monitors.first(where: { $0.id == id }), monitor.gpuDithering != nil else { return }
+        notices[id] = DisplayDithering.set(enabled, for: monitor.displayID) ? nil : .signalFailed
+        refresh()
     }
 
     /// Switch the current session between 1× and 2× using the installed profile.
@@ -242,8 +261,26 @@ final class DisplayScalingService: ObservableObject {
             notices[id] = .modeFailed
             return
         }
+        beginPreview(.resolution(original: original, trial: mode), for: id)
+    }
+
+    func previewSignal(_ format: DisplaySignalFormat.Format, for id: UUID) {
+        guard !busy, pending == nil else { return }
+        refresh()
+        guard let monitor = monitors.first(where: { $0.id == id }), let current = monitor.current,
+              let signal = monitor.signal, format != signal.active, signal.choices.contains(format) else { return }
+        guard Self.configure({ configuration in
+            DisplaySignalFormat.configure(configuration, display: monitor.displayID, mode: current, format: format)
+        }) else {
+            notices[id] = .signalFailed
+            return
+        }
+        beginPreview(.signal(mode: current, original: signal.active, trial: format), for: id)
+    }
+
+    private func beginPreview(_ change: PreviewChange, for id: UUID) {
         notices[id] = nil
-        previewModes = (original, mode)
+        previewChange = change
         pending = id
         refresh()
         revertTask = Task {
@@ -257,31 +294,55 @@ final class DisplayScalingService: ObservableObject {
         revertTask?.cancel()
         revertTask = nil
         pending = nil
-        previewModes = nil
+        previewChange = nil
     }
 
     func revert() {
-        guard let id = pending, let previewModes else { return }
+        guard let id = pending, let previewChange else { return }
         keep()
         defer { refresh() }
         guard let target = Self.onlineDisplays()?.first(where: { Self.uuid($0) == id }),
               CGDisplayIsInMirrorSet(target) == 0,
               let current = CGDisplayCopyDisplayMode(target) else {
-            notices[id] = .modeFailed
+            switch previewChange {
+            case .resolution: notices[id] = .modeFailed
+            case .signal: notices[id] = .signalFailed
+            }
             return
         }
+        switch previewChange {
+        case let .resolution(original, trial):
+            revertResolution(original, trial: trial, on: target, current: current, id: id)
+        case let .signal(mode, original, trial):
+            // Honor a newer format or timing selection made outside the preview.
+            guard Self.sameGeometryAndRefresh(mode, current) else { return }
+            guard let state = DisplaySignalFormat.state(for: target, mode: current) else {
+                notices[id] = .signalFailed
+                return
+            }
+            guard state.active == trial else { return }
+            if !Self.configure({ configuration in
+                DisplaySignalFormat.configure(configuration, display: target, mode: current, format: original)
+            }) {
+                notices[id] = .signalFailed
+            }
+        }
+    }
+
+    private func revertResolution(_ previous: CGDisplayMode, trial: Choice, on target: CGDirectDisplayID,
+                                  current: CGDisplayMode, id: UUID) {
         // A change made outside this preview takes precedence. Reconnection
         // can assign new mode IDs, so check the visible mode attributes here.
-        guard previewModes.trial.sameGeometry(current) else { return }
+        guard trial.sameGeometry(current) else { return }
         let publicModes = Self.modes(target)
-        let candidates = publicModes.filter { Self.sameGeometryAndRefresh($0, previewModes.original) }
-        let original = candidates.first(where: { Self.matches($0, previewModes.original) })
+        let candidates = publicModes.filter { Self.sameGeometryAndRefresh($0, previous) }
+        let original = candidates.first(where: { Self.matches($0, previous) })
             ?? (candidates.count == 1 ? candidates.first : nil)
         if let original, Self.apply(Choice(original), to: target) { return }
         // Once a scaled mode stops being current, CoreGraphics can hide it
         // again. Revalidate the original mode ID against the live mode table.
         if let hidden = DisplayScalingHiddenModes.modes(target, publicModes: publicModes).first(where: {
-            $0.usable && $0.scale == 2 && $0.refresh > 0 && Choice($0).matches(previewModes.original)
+            $0.usable && $0.scale == 2 && $0.refresh > 0 && Choice($0).matches(previous)
         }), Self.apply(Choice(hidden), to: target) { return }
         notices[id] = .modeFailed
     }
