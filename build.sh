@@ -44,8 +44,8 @@ for arg in "$@"; do
     esac
 done
 
-if (( MAIN_NAME && (! DEV || ! INSTALL || TEST) )); then
-    echo "✗ --main-name requires --dev --install" >&2
+if (( MAIN_NAME && (! DEV || TEST) )); then
+    echo "✗ --main-name requires --dev and cannot be used with --test" >&2
     exit 1
 fi
 
